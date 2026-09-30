@@ -1,0 +1,4 @@
+# Downloaded upstream tree and all generated build artifacts.
+source/
+build/
+out/

@@ -1,0 +1,222 @@
+From: Local X96 Kernel Build <noreply@example.invalid>
+Subject: [PATCH] arm64: dts: amlogic: add X96 Max Plus
+
+Add a headless AMedia X96 Max Plus board description. The common AC2xx DTSI
+already exists upstream and supplies SM1/S905X3 eMMC, SDIO, regulators, and
+serial support. This board file only carries the X96-specific memory size,
+Ethernet PHY timing, and bus limits required by the running hardware.
+
+---
+ arch/arm64/boot/dts/amlogic/Makefile                |  1 +
+ .../boot/dts/amlogic/meson-sm1-x96-max-plus.dts     | 86 +++++++++++++++++++
+ 2 files changed, 87 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/amlogic/Makefile b/arch/arm64/boot/dts/amlogic/Makefile
+index 000000000000..000000000000 100644
+--- a/arch/arm64/boot/dts/amlogic/Makefile
++++ b/arch/arm64/boot/dts/amlogic/Makefile
+@@ -99,5 +99,6 @@
+ dtb-$(CONFIG_ARCH_MESON) += meson-sm1-odroid-hc4.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-sm1-sei610.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-sm1-x96-air-gbit.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-sm1-x96-air.dtb
++dtb-$(CONFIG_ARCH_MESON) += meson-sm1-x96-max-plus.dtb
+ 
+diff --git a/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dts b/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dts
+new file mode 100644
+index 000000000000..000000000000
+--- /dev/null
++++ b/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dts
+@@ -0,0 +1,192 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
++/*
++ * AMedia X96 Max Plus (Amlogic SM1 / S905X3).
++ *
++ * Based on the upstream SM1 AC2xx common board description and the
++ * X96-specific settings maintained by UniFreq.
++ */
++
++/dts-v1/;
++
++#include "meson-sm1-ac2xx.dtsi"
++#include <dt-bindings/sound/meson-g12a-tohdmitx.h>
++
++/ {
++	compatible = "amlogic,sm1";
++	model = "AMedia X96 Max+";
++
++	sound {
++		compatible = "amlogic,axg-sound-card";
++		model = "X96 Max+";
++		audio-aux-devs = <&tdmout_b>;
++		audio-routing = "TDMOUT_B IN 0", "FRDDR_A OUT 1",
++				"TDMOUT_B IN 1", "FRDDR_B OUT 1",
++				"TDMOUT_B IN 2", "FRDDR_C OUT 1",
++				"TDM_B Playback", "TDMOUT_B OUT";
++		clocks = <&clkc CLKID_MPLL2>, <&clkc CLKID_MPLL0>,
++			 <&clkc CLKID_MPLL1>;
++		assigned-clocks = <&clkc CLKID_MPLL2>, <&clkc CLKID_MPLL0>,
++				  <&clkc CLKID_MPLL1>;
++		assigned-clock-parents = <0>, <0>, <0>;
++		assigned-clock-rates = <294912000>, <270950400>, <393216000>;
++		status = "okay";
++		dai-link-0 { sound-dai = <&frddr_a>; };
++		dai-link-1 { sound-dai = <&frddr_b>; };
++		dai-link-2 { sound-dai = <&frddr_c>; };
++		dai-link-3 {
++			sound-dai = <&tdmif_b>;
++			dai-format = "i2s";
++			dai-tdm-slot-tx-mask-0 = <1 1>;
++			dai-tdm-slot-tx-mask-1 = <1 1>;
++			dai-tdm-slot-tx-mask-2 = <1 1>;
++			dai-tdm-slot-tx-mask-3 = <1 1>;
++			mclk-fs = <256>;
++			codec { sound-dai = <&tohdmitx TOHDMITX_I2S_IN_B>; };
++		};
++		dai-link-4 {
++			sound-dai = <&tohdmitx TOHDMITX_I2S_OUT>;
++			codec { sound-dai = <&hdmi_tx>; };
++		};
++	};
++
++	vddgpu: regulator-vddgpu {
++		compatible = "regulator-fixed";
++		regulator-name = "mali";
++		regulator-min-microvolt = <800000>;
++		regulator-max-microvolt = <800000>;
++		vin-supply = <&ao_5v>;
++		regulator-always-on;
++	};
++
++	memory@0 {
++		device_type = "memory";
++		reg = <0x0 0x0 0x0 0xffffffff>;
++	};
++};
++
++&vddcpu {
++	regulator-min-microvolt = <721000>;
++	regulator-max-microvolt = <1022000>;
++	pwms = <&pwm_AO_cd 1 1250 0>;
++};
++
++&arb {
++	status = "okay";
++};
++
++&clkc_audio {
++	status = "okay";
++};
++
++&frddr_a {
++	status = "okay";
++};
++
++&frddr_b {
++	status = "okay";
++};
++
++&frddr_c {
++	status = "okay";
++};
++
++&tdmif_b {
++	status = "okay";
++};
++
++&tdmout_b {
++	status = "okay";
++};
++
++&tohdmitx {
++	status = "okay";
++};
++
++&ethmac {
++	status = "okay";
++	pinctrl-0 = <&eth_pins>, <&eth_rgmii_pins>;
++	pinctrl-names = "default";
++	phy-handle = <&external_phy>;
++	phy-mode = "rgmii";
++	amlogic,tx-delay-ns = <2>;
++	snps,aal;
++	snps,rxpbl = <0x8>;
++	snps,txpbl = <0x8>;
++	rx-fifo-depth = <4096>;
++	tx-fifo-depth = <4096>;
++	nvmem-cells = <&eth_mac>;
++	nvmem-cell-names = "eth_mac";
++};
++
++&ext_mdio {
++	external_phy: ethernet-phy@0 {
++		reg = <0>;
++		max-speed = <1000>;
++		reset-assert-us = <30000>;
++		reset-deassert-us = <80000>;
++		reset-gpios = <&gpio GPIOZ_15 (GPIO_ACTIVE_LOW | GPIO_OPEN_DRAIN)>;
++		interrupt-parent = <&gpio_intc>;
++		interrupts = <IRQID_GPIOZ_14 IRQ_TYPE_LEVEL_LOW>;
++	};
++};
++
++&ir {
++	linux,rc-map-name = "rc-x96max";
++};
++
++&mali {
++	mali-supply = <&vddgpu>;
++};
++
++&usb {
++	dr_mode = "host";
++};
++
++/* SDIO Wi-Fi: the board is stable at SDR50 rather than SDR104. */
++&sd_emmc_a {
++	/delete-property/ sd-uhs-sdr104;
++	sd-uhs-sdr12;
++	sd-uhs-sdr25;
++	sd-uhs-sdr50;
++	max-frequency = <100000000>;
++};
++
++/* External SD card: higher rates have caused CRC errors on this board. */
++&sd_emmc_b {
++	cap-sd-highspeed;
++	max-frequency = <25000000>;
++};
++
++&sd_emmc_c {
++	max-frequency = <200000000>;
++};
++
++&cpu_opp_table {
++	opp-2016000000 {
++		opp-hz = /bits/ 64 <2016000000>;
++		opp-microvolt = <1000000>;
++	};
++
++	opp-2100000000 {
++		opp-hz = /bits/ 64 <2100000000>;
++		opp-microvolt = <1022000>;
++	};
++};
++
++&efuse {
++	eth_mac: eth_mac@0 {
++		reg = <0x0 0x06>;
++	};
++
++	bt_mac: bt_mac@6 {
++		reg = <0x06 0x06>;
++	};
++
++	wifi_mac: wifi_mac@12 {
++		reg = <0x0c 0x06>;
++	};
++
++	usid: usid@18 {
++		reg = <0x12 0x10>;
++	};
++};
