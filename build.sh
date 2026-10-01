@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Build and package a versioned upstream Linux kernel for the X96 Max Plus.
+# Build and package an upstream Linux kernel on an ARM64 Actions runner.
 
 set -euo pipefail
 
-readonly KERNEL_VERSION="7.2.8"
+: "${KERNEL_VERSION:?KERNEL_VERSION must be set to an upstream Linux version}"
 readonly KERNEL_TAG="v${KERNEL_VERSION}"
 readonly PACKAGE_NAME="linux-image-sm1"
 readonly PACKAGE_VERSION="${KERNEL_VERSION}-sm1"
 readonly ARCH="arm64"
-readonly CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
-# Suppress Git's fallback "+" suffix after committing the local DTS patch.
+# The Actions runner builds natively. Set this only when intentionally using
+# an alternate compiler prefix.
+readonly CROSS_COMPILE="${CROSS_COMPILE:-}"
 export LOCALVERSION=""
 readonly ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 readonly SOURCE_DIR="${ROOT_DIR}/source"
@@ -47,8 +48,6 @@ checkout_source() {
 
 apply_board_patch() {
     git -C "${SOURCE_DIR}" apply --check "${PATCH_DIR}/sm1.patch"
-    # Commit the local patch so the kernel release is reproducible and does
-    # not acquire Linux's automatic "-dirty" suffix.
     git -C "${SOURCE_DIR}" apply --index "${PATCH_DIR}/sm1.patch"
     git -C "${SOURCE_DIR}" -c user.name="Local X96 Kernel Build" \
         -c user.email="noreply@example.invalid" commit --no-gpg-sign -m "arm64: dts: add X96 Max Plus"
@@ -58,8 +57,6 @@ configure_kernel() {
     rm -rf "${OUTPUT_DIR}"
     mkdir -p "${OUTPUT_DIR}"
 
-    # The baseline was normalized from the OPhub configuration with Linux
-    # v7.2.8. Keep it whole until hardware validation permits safe pruning.
     install -m 0644 "${CONFIG_BASELINE}" "${OUTPUT_DIR}/.config"
     "${SOURCE_DIR}/scripts/config" --file "${OUTPUT_DIR}/.config" \
         --disable ARCH_SUNXI --disable ARCH_ROCKCHIP --enable ARCH_MESON \

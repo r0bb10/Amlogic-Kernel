@@ -2,3 +2,4 @@
 source/
 build/
 out/
+local_build.sh

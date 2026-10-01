@@ -1,0 +1,192 @@
+name: Build SM1 Kernel
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and replace existing release assets
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  KERNEL_SERIES: "7.2"
+  KERNEL_URL: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+
+concurrency:
+  group: sm1-kernel
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      build: ${{ steps.detect.outputs.build }}
+      kernel_version: ${{ steps.detect.outputs.kernel_version }}
+      release_tag: ${{ steps.detect.outputs.release_tag }}
+    steps:
+      - name: Resolve the latest upstream stable tag
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_INPUT: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+
+          kernel_tag="$(
+            git ls-remote --tags --refs "$KERNEL_URL" "v${KERNEL_SERIES}.*" |
+              cut -f2 |
+              cut -d/ -f3 |
+              grep -E "^v${KERNEL_SERIES//./\.}\.[0-9]+$" |
+              sort -V |
+              tail -n1
+          )"
+          if [ -z "$kernel_tag" ]; then
+            echo "FATAL: no v${KERNEL_SERIES}.* tag found" >&2
+            exit 1
+          fi
+
+          kernel_version="${kernel_tag#v}"
+          release_tag="${kernel_version}-sm1"
+          printf 'kernel_version=%s\nrelease_tag=%s\n' "$kernel_version" "$release_tag" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE_INPUT" != true ] && gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice:: ${release_tag} is already published; nothing to do."
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build native ARM64 kernel package
+        env:
+          KERNEL_VERSION: ${{ needs.resolve.outputs.kernel_version }}
+        run: |
+          docker run --rm \
+            --platform linux/arm64 \
+            --volume "${GITHUB_WORKSPACE}:/workspace" \
+            --workdir /workspace \
+            --env KERNEL_VERSION \
+            debian:trixie \
+            bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq bc bison build-essential ca-certificates flex git libelf-dev libssl-dev openssl perl python3 dpkg-dev
+              git config --global --add safe.directory /workspace
+              CROSS_COMPILE="" ./build.sh
+              mkdir -p .artifacts
+              cp "out/linux-image-${KERNEL_VERSION}-sm1.deb" .artifacts/
+              sha256sum .artifacts/*.deb > .artifacts/SHA256SUMS
+              chmod -R a+rX .artifacts
+            '
+
+      - name: Upload kernel package
+        uses: actions/upload-artifact@v7
+        with:
+          name: sm1-kernel-${{ needs.resolve.outputs.kernel_version }}
+          path: .artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  validate:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Download kernel package
+        uses: actions/download-artifact@v8
+        with:
+          name: sm1-kernel-${{ needs.resolve.outputs.kernel_version }}
+          path: artifacts
+
+      - name: Validate SM1 kernel payload
+        env:
+          KERNEL_VERSION: ${{ needs.resolve.outputs.kernel_version }}
+        run: |
+          set -euo pipefail
+          package="artifacts/linux-image-${KERNEL_VERSION}-sm1.deb"
+          release="${KERNEL_VERSION}-sm1"
+          root="$(mktemp -d)"
+          control="$(mktemp -d)"
+          trap 'rm -rf "$root" "$control"' EXIT
+
+          sha256sum --check artifacts/SHA256SUMS
+          dpkg-deb --extract "$package" "$root"
+          dpkg-deb --control "$package" "$control"
+
+          test -s "$root/usr/lib/linux-image-sm1/$release/zImage"
+          test -s "$root/usr/lib/linux-image-sm1/$release/meson-sm1-x96-max-plus.dtb"
+          test -s "$root/usr/lib/linux-image-sm1/$release/config-$release"
+          test -d "$root/lib/modules/$release"
+          grep -qx 'Package: linux-image-sm1' "$control/control"
+          grep -qx "Version: $release" "$control/control"
+
+          config="$root/usr/lib/linux-image-sm1/$release/config-$release"
+          for option in \
+            CONFIG_ARCH_MESON=y \
+            '# CONFIG_ARCH_SUNXI is not set' \
+            '# CONFIG_ARCH_ROCKCHIP is not set' \
+            CONFIG_MMC_MESON_GX=y \
+            CONFIG_SERIAL_MESON_CONSOLE=y \
+            CONFIG_DWMAC_MESON=y \
+            CONFIG_ATH10K_SDIO=m \
+            CONFIG_RD_ZSTD=y; do
+            grep -qx "$option" "$config"
+          done
+
+  publish:
+    needs: [resolve, build, validate]
+    if: needs.resolve.outputs.build == 'true' && needs.validate.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: sm1-kernel-release-${{ needs.resolve.outputs.release_tag }}
+      cancel-in-progress: false
+    steps:
+      - name: Download validated package
+        uses: actions/download-artifact@v8
+        with:
+          name: sm1-kernel-${{ needs.resolve.outputs.kernel_version }}
+          path: artifacts
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_VERSION: ${{ needs.resolve.outputs.kernel_version }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          sha256sum --check artifacts/SHA256SUMS
+
+          notes="${RUNNER_TEMP}/release-notes.md"
+          cat > "$notes" <<EOF
+          Upstream Linux ${KERNEL_VERSION} for the AMedia X96 Max Plus (Amlogic SM1 / S905X3).
+
+          - Source: ${KERNEL_URL} tag v${KERNEL_VERSION}
+          - Architecture: ARM64
+          - Platform: Meson SM1
+          - Build verification: package contents and required SM1 configuration symbols
+          EOF
+
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TAG" \
+              --notes-file "$notes"
+          fi
+          gh release upload "$RELEASE_TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
