@@ -71,6 +71,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Restore Linux Git objects
+        uses: actions/cache@v5
+        with:
+          path: source/.git
+          # Keep one reusable shallow object store for this kernel series.
+          # build.sh fetches the requested tag and recreates the worktree.
+          key: linux-stable-git-${{ runner.arch }}-${{ env.KERNEL_SERIES }}-v1
+
       - name: Build native ARM64 kernel package
         env:
           KERNEL_VERSION: ${{ needs.resolve.outputs.kernel_version }}
