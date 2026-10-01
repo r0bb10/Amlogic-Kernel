@@ -52,7 +52,7 @@ jobs:
           fi
 
           kernel_version="${kernel_tag#v}"
-          release_tag="${kernel_version}-sm1"
+          release_tag="${kernel_version}"
           printf 'kernel_version=%s\nrelease_tag=%s\n' "$kernel_version" "$release_tag" >> "$GITHUB_OUTPUT"
 
           if [ "$FORCE_INPUT" != true ] && gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
