@@ -16,7 +16,7 @@ readonly SOURCE_DIR="${ROOT_DIR}/source"
 readonly OUTPUT_DIR="${ROOT_DIR}/build"
 readonly PACKAGE_DIR="${ROOT_DIR}/out"
 readonly PATCH_DIR="${ROOT_DIR}/patches"
-readonly CONFIG_FRAGMENT="${ROOT_DIR}/configs/x96maxplus.config"
+readonly CONFIG_BASELINE="${ROOT_DIR}/configs/ophub-7.2.8-meson.config"
 readonly KERNEL_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 
 require_command() {
@@ -58,13 +58,12 @@ configure_kernel() {
     rm -rf "${OUTPUT_DIR}"
     mkdir -p "${OUTPUT_DIR}"
 
-    # Start from no ARM64 platform or peripheral policy, then add only the X96
-    # and general-purpose Debian features declared by the config fragment.
-    make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" \
-        CROSS_COMPILE="${CROSS_COMPILE}" allnoconfig
-    "${SOURCE_DIR}/scripts/kconfig/merge_config.sh" -m -O "${OUTPUT_DIR}" \
-        "${OUTPUT_DIR}/.config" "${CONFIG_FRAGMENT}"
-    "${SOURCE_DIR}/scripts/config" --file "${OUTPUT_DIR}/.config" --disable LOCALVERSION_AUTO
+    # The baseline was normalized from the OPhub configuration with Linux
+    # v7.2.8. Keep it whole until hardware validation permits safe pruning.
+    install -m 0644 "${CONFIG_BASELINE}" "${OUTPUT_DIR}/.config"
+    "${SOURCE_DIR}/scripts/config" --file "${OUTPUT_DIR}/.config" \
+        --disable ARCH_SUNXI --disable ARCH_ROCKCHIP --enable ARCH_MESON \
+        --set-str LOCALVERSION "-sm1" --disable LOCALVERSION_AUTO
     make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
 }
 
@@ -118,6 +117,7 @@ depmod -a "\${release}"
 install -d -m 0755 /boot/dtb/amlogic
 install -m 0644 "\${image_dir}/zImage" /boot/zImage
 install -m 0644 "\${image_dir}/meson-sm1-x96-max-plus.dtb" /boot/dtb/amlogic/meson-sm1-x96-max-plus.dtb
+install -m 0644 "\${image_dir}/config-\${release}" "/boot/config-\${release}"
 install -d -m 0755 "\${staging_dir}"
 rm -f "\${initrd}"
 update-initramfs -c -k "\${release}" -b "\${staging_dir}"
