@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Build and package a versioned upstream Linux kernel for the X96 Max Plus.
+# Build and package an upstream Linux kernel on an ARM64 Actions runner.
 
 set -euo pipefail
 
-readonly KERNEL_VERSION="7.2.8"
+: "${KERNEL_VERSION:?KERNEL_VERSION must be set to an upstream Linux version}"
 readonly KERNEL_TAG="v${KERNEL_VERSION}"
 readonly PACKAGE_NAME="linux-image-sm1"
 readonly PACKAGE_VERSION="${KERNEL_VERSION}-sm1"
 readonly ARCH="arm64"
-readonly CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
-# Suppress Git's fallback "+" suffix after committing the local DTS patch.
+# The Actions runner builds natively. Set this only when intentionally using
+# an alternate compiler prefix.
+readonly CROSS_COMPILE="${CROSS_COMPILE:-}"
 export LOCALVERSION=""
 readonly ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 readonly SOURCE_DIR="${ROOT_DIR}/source"
 readonly OUTPUT_DIR="${ROOT_DIR}/build"
 readonly PACKAGE_DIR="${ROOT_DIR}/out"
 readonly PATCH_DIR="${ROOT_DIR}/patches"
-readonly CONFIG_FRAGMENT="${ROOT_DIR}/configs/x96maxplus.config"
+readonly CONFIG_BASELINE="${ROOT_DIR}/configs/sm1.config"
 readonly KERNEL_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 
 require_command() {
@@ -46,10 +47,8 @@ checkout_source() {
 }
 
 apply_board_patch() {
-    git -C "${SOURCE_DIR}" apply --check "${PATCH_DIR}/x96maxplus.patch"
-    # Commit the local patch so the kernel release is reproducible and does
-    # not acquire Linux's automatic "-dirty" suffix.
-    git -C "${SOURCE_DIR}" apply --index "${PATCH_DIR}/x96maxplus.patch"
+    git -C "${SOURCE_DIR}" apply --check "${PATCH_DIR}/sm1.patch"
+    git -C "${SOURCE_DIR}" apply --index "${PATCH_DIR}/sm1.patch"
     git -C "${SOURCE_DIR}" -c user.name="Local X96 Kernel Build" \
         -c user.email="noreply@example.invalid" commit --no-gpg-sign -m "arm64: dts: add X96 Max Plus"
 }
@@ -58,13 +57,10 @@ configure_kernel() {
     rm -rf "${OUTPUT_DIR}"
     mkdir -p "${OUTPUT_DIR}"
 
-    # Start from no ARM64 platform or peripheral policy, then add only the X96
-    # and general-purpose Debian features declared by the config fragment.
-    make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" \
-        CROSS_COMPILE="${CROSS_COMPILE}" allnoconfig
-    "${SOURCE_DIR}/scripts/kconfig/merge_config.sh" -m -O "${OUTPUT_DIR}" \
-        "${OUTPUT_DIR}/.config" "${CONFIG_FRAGMENT}"
-    "${SOURCE_DIR}/scripts/config" --file "${OUTPUT_DIR}/.config" --disable LOCALVERSION_AUTO
+    install -m 0644 "${CONFIG_BASELINE}" "${OUTPUT_DIR}/.config"
+    "${SOURCE_DIR}/scripts/config" --file "${OUTPUT_DIR}/.config" \
+        --disable ARCH_SUNXI --disable ARCH_ROCKCHIP --enable ARCH_MESON \
+        --set-str LOCALVERSION "-sm1" --disable LOCALVERSION_AUTO
     make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
 }
 
@@ -77,24 +73,24 @@ package_kernel() {
     local stage_dir="${OUTPUT_DIR}/package-root"
     local control_dir="${stage_dir}/DEBIAN"
     local kernel_release
-    local dtb_dir
+    local image_dir
     local image_source="${OUTPUT_DIR}/arch/arm64/boot/Image"
     local dtb_source="${OUTPUT_DIR}/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dtb"
 
     kernel_release="$(make -s -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" kernelrelease)"
-    dtb_dir="${stage_dir}/boot/dtb/amlogic"
+    image_dir="${stage_dir}/usr/lib/${PACKAGE_NAME}/${kernel_release}"
 
     rm -rf "${stage_dir}"
-    mkdir -p "${control_dir}" "${dtb_dir}" "${stage_dir}/boot"
+    mkdir -p "${control_dir}" "${image_dir}" "${stage_dir}/boot"
 
     make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
         INSTALL_MOD_PATH="${stage_dir}" INSTALL_MOD_STRIP=1 modules_install
     rm -f "${stage_dir}/lib/modules/${kernel_release}/build" \
         "${stage_dir}/lib/modules/${kernel_release}/source"
-    install -m 0644 "${image_source}" "${stage_dir}/boot/zImage"
-    install -m 0644 "${dtb_source}" "${dtb_dir}/meson-sm1-x96-max-plus.dtb"
-    install -m 0644 "${OUTPUT_DIR}/.config" "${stage_dir}/boot/config-${kernel_release}"
-    install -m 0644 "${OUTPUT_DIR}/System.map" "${stage_dir}/boot/System.map-${kernel_release}"
+    install -m 0644 "${image_source}" "${image_dir}/zImage"
+    install -m 0644 "${dtb_source}" "${image_dir}/meson-sm1-x96-max-plus.dtb"
+    install -m 0644 "${OUTPUT_DIR}/.config" "${image_dir}/config-${kernel_release}"
+    install -m 0644 "${OUTPUT_DIR}/System.map" "${image_dir}/System.map-${kernel_release}"
 
     cat >"${control_dir}/control" <<EOF
 Package: ${PACKAGE_NAME}
@@ -111,9 +107,14 @@ set -eu
 
 release='${kernel_release}'
 staging_dir="/var/lib/${PACKAGE_NAME}/\${release}"
+image_dir="/usr/lib/${PACKAGE_NAME}/\${release}"
 initrd="\${staging_dir}/initrd.img-\${release}"
 
 depmod -a "\${release}"
+install -d -m 0755 /boot/dtb/amlogic
+install -m 0644 "\${image_dir}/zImage" /boot/zImage
+install -m 0644 "\${image_dir}/meson-sm1-x96-max-plus.dtb" /boot/dtb/amlogic/meson-sm1-x96-max-plus.dtb
+install -m 0644 "\${image_dir}/config-\${release}" "/boot/config-\${release}"
 install -d -m 0755 "\${staging_dir}"
 rm -f "\${initrd}"
 update-initramfs -c -k "\${release}" -b "\${staging_dir}"
