@@ -95,19 +95,20 @@ jobs:
               apt-get install -y -qq bc bison build-essential ca-certificates flex git libelf-dev libssl-dev openssl perl python3 dpkg-dev
               git config --global --add safe.directory /workspace
               CROSS_COMPILE="" ./build.sh
-              mkdir -p .artifacts
-              cp "out/linux-image-${KERNEL_VERSION}-sm1.deb" .artifacts/
-              sha256sum .artifacts/*.deb > .artifacts/SHA256SUMS
-              chmod -R a+rX .artifacts
+              mkdir -p artifacts
+              cp "out/linux-image-${KERNEL_VERSION}-sm1.deb" artifacts/
+              sha256sum artifacts/*.deb > artifacts/SHA256SUMS
+              chmod -R a+rX artifacts
             '
 
       - name: Upload kernel package
         uses: actions/upload-artifact@v7
         with:
           name: sm1-kernel-${{ needs.resolve.outputs.kernel_version }}
-          path: .artifacts/
+          path: artifacts/
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
 
   validate:
     needs: [resolve, build]
