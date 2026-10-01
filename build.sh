@@ -77,24 +77,24 @@ package_kernel() {
     local stage_dir="${OUTPUT_DIR}/package-root"
     local control_dir="${stage_dir}/DEBIAN"
     local kernel_release
-    local dtb_dir
+    local image_dir
     local image_source="${OUTPUT_DIR}/arch/arm64/boot/Image"
     local dtb_source="${OUTPUT_DIR}/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dtb"
 
     kernel_release="$(make -s -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" kernelrelease)"
-    dtb_dir="${stage_dir}/boot/dtb/amlogic"
+    image_dir="${stage_dir}/usr/lib/${PACKAGE_NAME}/${kernel_release}"
 
     rm -rf "${stage_dir}"
-    mkdir -p "${control_dir}" "${dtb_dir}" "${stage_dir}/boot"
+    mkdir -p "${control_dir}" "${image_dir}" "${stage_dir}/boot"
 
     make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
         INSTALL_MOD_PATH="${stage_dir}" INSTALL_MOD_STRIP=1 modules_install
     rm -f "${stage_dir}/lib/modules/${kernel_release}/build" \
         "${stage_dir}/lib/modules/${kernel_release}/source"
-    install -m 0644 "${image_source}" "${stage_dir}/boot/zImage"
-    install -m 0644 "${dtb_source}" "${dtb_dir}/meson-sm1-x96-max-plus.dtb"
-    install -m 0644 "${OUTPUT_DIR}/.config" "${stage_dir}/boot/config-${kernel_release}"
-    install -m 0644 "${OUTPUT_DIR}/System.map" "${stage_dir}/boot/System.map-${kernel_release}"
+    install -m 0644 "${image_source}" "${image_dir}/zImage"
+    install -m 0644 "${dtb_source}" "${image_dir}/meson-sm1-x96-max-plus.dtb"
+    install -m 0644 "${OUTPUT_DIR}/.config" "${image_dir}/config-${kernel_release}"
+    install -m 0644 "${OUTPUT_DIR}/System.map" "${image_dir}/System.map-${kernel_release}"
 
     cat >"${control_dir}/control" <<EOF
 Package: ${PACKAGE_NAME}
@@ -111,9 +111,13 @@ set -eu
 
 release='${kernel_release}'
 staging_dir="/var/lib/${PACKAGE_NAME}/\${release}"
+image_dir="/usr/lib/${PACKAGE_NAME}/\${release}"
 initrd="\${staging_dir}/initrd.img-\${release}"
 
 depmod -a "\${release}"
+install -d -m 0755 /boot/dtb/amlogic
+install -m 0644 "\${image_dir}/zImage" /boot/zImage
+install -m 0644 "\${image_dir}/meson-sm1-x96-max-plus.dtb" /boot/dtb/amlogic/meson-sm1-x96-max-plus.dtb
 install -d -m 0755 "\${staging_dir}"
 rm -f "\${initrd}"
 update-initramfs -c -k "\${release}" -b "\${staging_dir}"
