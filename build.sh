@@ -119,6 +119,22 @@ install -d -m 0755 "\${staging_dir}"
 rm -f "\${initrd}"
 update-initramfs -c -k "\${release}" -b "\${staging_dir}"
 mkimage -A arm -O linux -T ramdisk -C none -d "\${initrd}" /boot/uInitrd
+
+# This board has a single fixed boot path, so retained kernels cannot be booted.
+# Remove obsolete modules and versioned boot files only after the new payload exists.
+for modules_dir in /lib/modules/*; do
+	[ -d "\${modules_dir}" ] || continue
+	[ "\${modules_dir}" = "/lib/modules/\${release}" ] && continue
+	rm -rf "\${modules_dir}"
+done
+for boot_file in /boot/config-* /boot/initrd.img-* /boot/System.map-* \
+	/boot/uInitrd-* /boot/vmlinuz-* /boot/Image-*; do
+	[ -e "\${boot_file}" ] || continue
+	case "\${boot_file}" in
+		"/boot/config-\${release}"|"/boot/System.map-\${release}") continue ;;
+	esac
+	rm -f "\${boot_file}"
+done
 EOF
     chmod 0755 "${control_dir}/postinst"
 
