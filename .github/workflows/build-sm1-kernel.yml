@@ -105,7 +105,6 @@ jobs:
               CROSS_COMPILE="" ./build.sh
               mkdir -p artifacts
               cp "out/linux-image-${KERNEL_VERSION}-sm1.deb" artifacts/
-              sha256sum artifacts/*.deb > artifacts/SHA256SUMS
               chmod -R a+rX artifacts
             '
 
@@ -148,7 +147,6 @@ jobs:
           control="$(mktemp -d)"
           trap 'rm -rf "$root" "$control"' EXIT
 
-          sha256sum --check artifacts/SHA256SUMS
           dpkg-deb --extract "$package" "$root"
           dpkg-deb --control "$package" "$control"
 
@@ -194,8 +192,6 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           set -euo pipefail
-          sha256sum --check artifacts/SHA256SUMS
-
           notes="${RUNNER_TEMP}/release-notes.md"
           cat > "$notes" <<EOF
           Upstream Linux ${KERNEL_VERSION} for the AMedia X96 Max Plus (Amlogic SM1 / S905X3).
