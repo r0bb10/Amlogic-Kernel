@@ -16,7 +16,7 @@ readonly SOURCE_DIR="${ROOT_DIR}/source"
 readonly OUTPUT_DIR="${ROOT_DIR}/build"
 readonly PACKAGE_DIR="${ROOT_DIR}/out"
 readonly PATCH_DIR="${ROOT_DIR}/patches"
-readonly CONFIG_BASELINE="${ROOT_DIR}/configs/ophub-7.2.8-meson.config"
+readonly CONFIG_BASELINE="${ROOT_DIR}/configs/sm1.config"
 readonly KERNEL_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 
 require_command() {
@@ -46,10 +46,10 @@ checkout_source() {
 }
 
 apply_board_patch() {
-    git -C "${SOURCE_DIR}" apply --check "${PATCH_DIR}/x96maxplus.patch"
+    git -C "${SOURCE_DIR}" apply --check "${PATCH_DIR}/sm1.patch"
     # Commit the local patch so the kernel release is reproducible and does
     # not acquire Linux's automatic "-dirty" suffix.
-    git -C "${SOURCE_DIR}" apply --index "${PATCH_DIR}/x96maxplus.patch"
+    git -C "${SOURCE_DIR}" apply --index "${PATCH_DIR}/sm1.patch"
     git -C "${SOURCE_DIR}" -c user.name="Local X96 Kernel Build" \
         -c user.email="noreply@example.invalid" commit --no-gpg-sign -m "arm64: dts: add X96 Max Plus"
 }
