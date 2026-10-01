@@ -79,7 +79,15 @@ jobs:
           # build.sh fetches the requested tag and recreates the worktree.
           key: linux-stable-git-${{ runner.arch }}-${{ env.KERNEL_SERIES }}-v1
 
+      - name: Restore completed package
+        id: package-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: artifacts
+          key: sm1-package-${{ runner.arch }}-${{ needs.resolve.outputs.kernel_version }}-${{ hashFiles('build.sh', 'configs/sm1.config', 'patches/sm1.patch') }}
+
       - name: Build native ARM64 kernel package
+        if: steps.package-cache.outputs.cache-hit != 'true'
         env:
           KERNEL_VERSION: ${{ needs.resolve.outputs.kernel_version }}
         run: |
@@ -100,6 +108,13 @@ jobs:
               sha256sum artifacts/*.deb > artifacts/SHA256SUMS
               chmod -R a+rX artifacts
             '
+
+      - name: Cache completed package
+        if: steps.package-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: artifacts
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
 
       - name: Upload kernel package
         uses: actions/upload-artifact@v7
