@@ -1,0 +1,35 @@
+[Unit]
+Description=Import optional Wi-Fi configuration from BOOT
+DefaultDependencies=no
+RequiresMountsFor=/boot /etc/wpa_supplicant
+After=local-fs.target
+Before=network-pre.target networking.service ifup@wlan0.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+ConditionPathExists=/boot/wpa_supplicant.conf
+
+[Service]
+Type=oneshot
+# ':' leaves shell variables untouched by systemd's environment expansion.
+ExecStart=:/bin/sh -ec '\
+    source=/boot/wpa_supplicant.conf; \
+    directory=/etc/wpa_supplicant; \
+    target=$directory/wpa_supplicant.conf; \
+    [ -e "$source" ] || exit 0; \
+    if [ ! -f "$source" ] || [ -L "$source" ] || [ ! -s "$source" ]; then \
+        echo "BOOT Wi-Fi configuration must be a nonempty regular file" >&2; exit 1; \
+    fi; \
+    install -d -m 0755 -o root -g root "$directory"; \
+    temporary=$(mktemp "$directory/.wifi-import.XXXXXX"); \
+    cleanup() { rm -f -- "$temporary"; }; \
+    trap cleanup EXIT; trap "exit 130" INT; trap "exit 143" TERM; \
+    install -m 0600 -o root -g root "$source" "$temporary"; \
+    mv -fT -- "$temporary" "$target"; \
+    sync -f "$target"; \
+    rm -- "$source"; \
+    sync -f /boot; \
+    echo "Imported BOOT Wi-Fi configuration"'
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

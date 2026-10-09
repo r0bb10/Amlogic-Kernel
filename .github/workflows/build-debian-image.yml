@@ -1,0 +1,115 @@
+name: Build X96 Debian Image
+
+on:
+  workflow_run:
+    workflows: [Build SM1 Kernel]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: Published kernel version (empty selects latest release)
+        type: string
+        default: ""
+      force:
+        description: Rebuild even if an unexpired image artifact exists
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: x96-debian-image
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.kernel.outputs.build }}
+      version: ${{ steps.kernel.outputs.version }}
+    steps:
+      - name: Resolve published kernel and check image artifacts
+        id: kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_INPUT: ${{ inputs.kernel_version }}
+          FORCE_INPUT: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$KERNEL_INPUT" ]; then
+            [[ "$KERNEL_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            args=("$KERNEL_INPUT")
+          fi
+          gh release view "${args[@]}" --repo "$GITHUB_REPOSITORY" --json tagName,assets > release.json
+          version=$(jq -er '.tagName' release.json)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          jq -e --arg name "linux-image-$version-sm1.deb" \
+            'any(.assets[]; .name == $name)' release.json >/dev/null
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" > artifacts.json
+          if [ "$FORCE_INPUT" != true ] && jq -se \
+            --arg legacy "debian-trixie-x96-max-plus-$version" \
+            --arg suffix "-image-kernel-$version" \
+            'any(.[].artifacts[]; .expired == false and
+              (.name == $legacy or
+               (.name | startswith("debian-trixie-") and endswith($suffix))))' artifacts.json >/dev/null; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            echo "::notice:: An unexpired Debian image artifact for $version already exists."
+          else
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and validate Debian image
+        id: image
+        env:
+          KERNEL_VERSION: ${{ needs.resolve.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Privileged access is required for loop devices and chroot bind mounts.
+          # Only trusted repository code runs here; no upstream-run artifacts execute.
+          docker run --rm --privileged \
+            --volume /dev:/dev \
+            --volume "$GITHUB_OUTPUT:/step-output" \
+            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
+            --env KERNEL_VERSION --env GH_TOKEN --env KERNEL_REPOSITORY="$GITHUB_REPOSITORY" \
+            debian:trixie bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq ca-certificates curl debootstrap jq util-linux dosfstools e2fsprogs parted rsync python3 initramfs-tools-core zstd
+              export OUTPUT="/workspace/out/dist/debian-trixie-x96-max-plus-${KERNEL_VERSION}.img"
+              tools/build-debian-image.sh
+              debian_version=$(cat out/.work/debian-image-build/rootfs/etc/debian_version)
+              [[ "$debian_version" =~ ^[0-9]+(\.[0-9]+)*$ ]] || exit 1
+              artifact="debian-trixie-${debian_version}-image-kernel-${KERNEL_VERSION}"
+              echo "artifact=$artifact" >> /step-output
+              mkdir -p artifacts
+              zstd -T0 -6 "$OUTPUT" -o "artifacts/$artifact.img.zst"
+              cd artifacts
+              sha256sum "$artifact.img.zst" > "$artifact.img.zst.sha256"
+              chmod a+r *.img.zst *.sha256
+            '
+      - name: Upload validated image and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.image.outputs.artifact }}
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

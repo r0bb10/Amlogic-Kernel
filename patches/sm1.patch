@@ -1,18 +1,16 @@
-From: Local X96 Kernel Build <noreply@example.invalid>
+From: Amlogic Kernel Build <41898282+github-actions[bot]@users.noreply.github.com>
 Subject: [PATCH] arm64: dts: amlogic: add X96 Max Plus
 
-Add a headless AMedia X96 Max Plus board description. The common AC2xx DTSI
-already exists upstream and supplies SM1/S905X3 eMMC, SDIO, regulators, and
-serial support. This board file only carries the X96-specific memory size,
-Ethernet PHY timing, and bus limits required by the running hardware.
+Add an AMedia X96 Max Plus board description based on the upstream SM1
+AC2xx DTSI. Define board-specific memory, Ethernet PHY timing, bus limits,
+audio routing, regulators, USB host mode, and CPU operating points.
 
 ---
  arch/arm64/boot/dts/amlogic/Makefile                |  1 +
- .../boot/dts/amlogic/meson-sm1-x96-max-plus.dts     | 86 +++++++++++++++++++
- 2 files changed, 87 insertions(+)
+ .../boot/dts/amlogic/meson-sm1-x96-max-plus.dts     | 192 +++++++++++++++++++
+ 2 files changed, 193 insertions(+)
 
 diff --git a/arch/arm64/boot/dts/amlogic/Makefile b/arch/arm64/boot/dts/amlogic/Makefile
-index 000000000000..000000000000 100644
 --- a/arch/arm64/boot/dts/amlogic/Makefile
 +++ b/arch/arm64/boot/dts/amlogic/Makefile
 @@ -99,5 +99,6 @@
@@ -24,7 +22,6 @@ index 000000000000..000000000000 100644
  
 diff --git a/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dts b/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dts
 new file mode 100644
-index 000000000000..000000000000
 --- /dev/null
 +++ b/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dts
 @@ -0,0 +1,192 @@

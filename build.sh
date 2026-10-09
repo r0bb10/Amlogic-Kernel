@@ -12,7 +12,8 @@ readonly ARCH="arm64"
 # an alternate compiler prefix.
 readonly CROSS_COMPILE="${CROSS_COMPILE:-}"
 export LOCALVERSION=""
-readonly ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+readonly ROOT_DIR
 readonly SOURCE_DIR="${ROOT_DIR}/source"
 readonly OUTPUT_DIR="${ROOT_DIR}/build"
 readonly PACKAGE_DIR="${ROOT_DIR}/out"
@@ -49,8 +50,8 @@ checkout_source() {
 apply_board_patch() {
     git -C "${SOURCE_DIR}" apply --check "${PATCH_DIR}/sm1.patch"
     git -C "${SOURCE_DIR}" apply --index "${PATCH_DIR}/sm1.patch"
-    git -C "${SOURCE_DIR}" -c user.name="Local X96 Kernel Build" \
-        -c user.email="noreply@example.invalid" commit --no-gpg-sign -m "arm64: dts: add X96 Max Plus"
+    git -C "${SOURCE_DIR}" -c user.name="Amlogic Kernel Build" \
+        -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit --no-gpg-sign -m "arm64: dts: add X96 Max Plus"
 }
 
 configure_kernel() {
@@ -97,7 +98,7 @@ Package: ${PACKAGE_NAME}
 Version: ${PACKAGE_VERSION}
 Architecture: arm64
 Depends: initramfs-tools, u-boot-tools
-Maintainer: Local X96 Kernel Build <noreply@example.invalid>
+Maintainer: Amlogic Kernel Build <41898282+github-actions[bot]@users.noreply.github.com>
 Description: Upstream Linux ${KERNEL_VERSION} for the AMedia X96 Max Plus
 EOF
 
