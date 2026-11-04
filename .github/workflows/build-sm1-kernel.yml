@@ -1,4 +1,4 @@
-name: Build SM1 Kernel
+name: Build Amlogic Kernels
 
 on:
   schedule:
@@ -55,8 +55,12 @@ jobs:
           release_tag="${kernel_version}"
           printf 'kernel_version=%s\nrelease_tag=%s\n' "$kernel_version" "$release_tag" >> "$GITHUB_OUTPUT"
 
-          if [ "$FORCE_INPUT" != true ] && gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice:: ${release_tag} is already published; nothing to do."
+          if [ "$FORCE_INPUT" != true ] && \
+            gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json assets > release.json && \
+            jq -e --arg sm1 "linux-image-$kernel_version-sm1.deb" \
+              --arg gxl "linux-image-$kernel_version-gxl.deb" \
+              'any(.assets[]; .name == $sm1) and any(.assets[]; .name == $gxl)' release.json >/dev/null; then
+            echo "::notice:: ${release_tag} already contains both kernel packages; nothing to do."
             echo 'build=false' >> "$GITHUB_OUTPUT"
           else
             echo 'build=true' >> "$GITHUB_OUTPUT"
@@ -65,6 +69,10 @@ jobs:
   build:
     needs: resolve
     if: needs.resolve.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [sm1, gxl]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     steps:
@@ -84,18 +92,19 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: artifacts
-          key: sm1-package-${{ runner.arch }}-${{ needs.resolve.outputs.kernel_version }}-${{ hashFiles('build.sh', 'configs/sm1.config', 'patches/sm1.patch') }}
+          key: ${{ matrix.family }}-package-${{ runner.arch }}-${{ needs.resolve.outputs.kernel_version }}-${{ hashFiles('build.sh', 'configs/sm1.config', 'patches/*.patch') }}
 
       - name: Build native ARM64 kernel package
         if: steps.package-cache.outputs.cache-hit != 'true'
         env:
           KERNEL_VERSION: ${{ needs.resolve.outputs.kernel_version }}
+          KERNEL_FAMILY: ${{ matrix.family }}
         run: |
           docker run --rm \
             --platform linux/arm64 \
             --volume "${GITHUB_WORKSPACE}:/workspace" \
             --workdir /workspace \
-            --env KERNEL_VERSION \
+            --env KERNEL_VERSION --env KERNEL_FAMILY \
             debian:trixie \
             bash -euo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
@@ -105,7 +114,7 @@ jobs:
               git config --global --add safe.directory /workspace/source
               CROSS_COMPILE="" ./build.sh
               mkdir -p artifacts
-              cp "out/linux-image-${KERNEL_VERSION}-sm1.deb" artifacts/
+              cp "out/linux-image-${KERNEL_VERSION}-${KERNEL_FAMILY}.deb" artifacts/
               chmod -R a+rX artifacts
             '
 
@@ -119,7 +128,7 @@ jobs:
       - name: Upload kernel package
         uses: actions/upload-artifact@v7
         with:
-          name: linux-image-${{ needs.resolve.outputs.kernel_version }}-sm1.deb
+          name: linux-image-${{ needs.resolve.outputs.kernel_version }}-${{ matrix.family }}.deb
           path: artifacts/
           if-no-files-found: error
           retention-days: 14
@@ -128,22 +137,32 @@ jobs:
   validate:
     needs: [resolve, build]
     if: needs.resolve.outputs.build == 'true' && needs.build.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [sm1, gxl]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - name: Download kernel package
         uses: actions/download-artifact@v8
         with:
-          name: linux-image-${{ needs.resolve.outputs.kernel_version }}-sm1.deb
+          name: linux-image-${{ needs.resolve.outputs.kernel_version }}-${{ matrix.family }}.deb
           path: artifacts
 
-      - name: Validate SM1 kernel payload
+      - name: Validate kernel payload
         env:
           KERNEL_VERSION: ${{ needs.resolve.outputs.kernel_version }}
+          KERNEL_FAMILY: ${{ matrix.family }}
         run: |
           set -euo pipefail
-          package="artifacts/linux-image-${KERNEL_VERSION}-sm1.deb"
-          release="${KERNEL_VERSION}-sm1"
+          package="artifacts/linux-image-${KERNEL_VERSION}-${KERNEL_FAMILY}.deb"
+          release="${KERNEL_VERSION}-${KERNEL_FAMILY}"
+          case "$KERNEL_FAMILY" in
+            sm1) dtb=meson-sm1-x96-max-plus.dtb ;;
+            gxl) dtb=meson-gxl-s905w-tx3-mini.dtb ;;
+            *) exit 1 ;;
+          esac
           root="$(mktemp -d)"
           control="$(mktemp -d)"
           trap 'rm -rf "$root" "$control"' EXIT
@@ -151,14 +170,26 @@ jobs:
           dpkg-deb --extract "$package" "$root"
           dpkg-deb --control "$package" "$control"
 
-          test -s "$root/usr/lib/linux-image-sm1/$release/zImage"
-          test -s "$root/usr/lib/linux-image-sm1/$release/meson-sm1-x96-max-plus.dtb"
-          test -s "$root/usr/lib/linux-image-sm1/$release/config-$release"
+          image_dir="$root/usr/lib/linux-image-$KERNEL_FAMILY/$release"
+          test -s "$image_dir/zImage"
+          test -s "$image_dir/$dtb"
+          test -s "$image_dir/config-$release"
           test -d "$root/lib/modules/$release"
-          grep -qx 'Package: linux-image-sm1' "$control/control"
+          grep -qx "Package: linux-image-$KERNEL_FAMILY" "$control/control"
           grep -qx "Version: $release" "$control/control"
 
-          config="$root/usr/lib/linux-image-sm1/$release/config-$release"
+          config="$image_dir/config-$release"
+          grep -qx "CONFIG_LOCALVERSION=\"-$KERNEL_FAMILY\"" "$config"
+          sh -n "$control/postinst" "$control/postrm"
+          grep -Fq "/boot/dtb/amlogic/$dtb" "$control/postinst"
+          python3 - "$image_dir/zImage" "$KERNEL_FAMILY" <<'PY'
+          import struct, sys
+          with open(sys.argv[1], 'rb') as f:
+              header = f.read(64)
+          assert header[56:60] == b'ARM\x64', 'not a raw ARM64 Image'
+          if sys.argv[2] == 'gxl':
+              assert struct.unpack_from('<Q', header, 8)[0] == 0x01080000, 'missing legacy Amlogic Image load offset'
+          PY
           for option in \
             CONFIG_ARCH_MESON=y \
             '# CONFIG_ARCH_SUNXI is not set' \
@@ -170,6 +201,14 @@ jobs:
             CONFIG_RD_ZSTD=y; do
             grep -qx "$option" "$config"
           done
+          if [ "$KERNEL_FAMILY" = gxl ]; then
+            grep -Fq 'mkimage -A arm64 ' "$control/postinst"
+            for option in CONFIG_MESON_GXL_PHY=y CONFIG_PINCTRL_MESON_GXL=y \
+              CONFIG_COMMON_CLK_GXBB=y CONFIG_PHY_MESON_GXL_USB2=y \
+              CONFIG_ARM_SCPI_PROTOCOL=y CONFIG_ARM_SCPI_CPUFREQ=y; do
+              grep -qx "$option" "$config"
+            done
+          fi
 
   publish:
     needs: [resolve, build, validate]
@@ -183,7 +222,8 @@ jobs:
       - name: Download validated package
         uses: actions/download-artifact@v8
         with:
-          name: linux-image-${{ needs.resolve.outputs.kernel_version }}-sm1.deb
+          pattern: linux-image-${{ needs.resolve.outputs.kernel_version }}-*.deb
+          merge-multiple: true
           path: artifacts
 
       - name: Publish release
@@ -195,12 +235,14 @@ jobs:
           set -euo pipefail
           notes="${RUNNER_TEMP}/release-notes.md"
           cat > "$notes" <<EOF
-          Upstream Linux ${KERNEL_VERSION} for the AMedia X96 Max Plus (Amlogic SM1 / S905X3).
+          Upstream Linux ${KERNEL_VERSION} for Amlogic ARM64 TV boxes.
 
           - Source: ${KERNEL_URL} tag v${KERNEL_VERSION}
           - Architecture: ARM64
-          - Platform: Meson SM1
-          - Build verification: package contents and required SM1 configuration symbols
+          - SM1: AMedia X96 Max Plus / S905X3, linux-image-${KERNEL_VERSION}-sm1.deb
+          - GXL: Tanix TX3 Mini / S905W, linux-image-${KERNEL_VERSION}-gxl.deb (hardware testing pending)
+          - Build verification: package contents, board DTBs, and required platform configuration symbols
+          - Install only the package for your board; recovery images are manual Actions artifacts, not release assets.
           EOF
 
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -210,4 +252,7 @@ jobs:
               --title "$RELEASE_TAG" \
               --notes-file "$notes"
           fi
-          gh release upload "$RELEASE_TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
+          for family in sm1 gxl; do
+            test -s "artifacts/linux-image-${KERNEL_VERSION}-${family}.deb"
+          done
+          gh release upload "$RELEASE_TAG" artifacts/*.deb --repo "$GITHUB_REPOSITORY" --clobber

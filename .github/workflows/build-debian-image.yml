@@ -1,48 +1,46 @@
-name: Build X96 Debian Image
+name: Build Debian Image
 
 on:
-  workflow_run:
-    workflows: [Build SM1 Kernel]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
+      board:
+        description: Board to restore (TX3 Mini is hardware-unverified; no eMMC installer)
+        type: choice
+        options:
+          - x96-max-plus
+          - tx3-mini
+        default: x96-max-plus
       kernel_version:
         description: Published kernel version (empty selects latest release)
         type: string
         default: ""
-      force:
-        description: Rebuild even if an unexpired image artifact exists
-        type: boolean
-        default: false
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
-  group: x96-debian-image
+  group: debian-image-${{ inputs.board || 'x96-max-plus' }}
   cancel-in-progress: false
 
 jobs:
   resolve:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
     outputs:
-      build: ${{ steps.kernel.outputs.build }}
       version: ${{ steps.kernel.outputs.version }}
     steps:
-      - name: Resolve published kernel and check image artifacts
+      - name: Resolve published kernel
         id: kernel
         env:
           GH_TOKEN: ${{ github.token }}
           KERNEL_INPUT: ${{ inputs.kernel_version }}
-          FORCE_INPUT: ${{ inputs.force }}
+          BOARD: ${{ inputs.board || 'x96-max-plus' }}
         run: |
           set -euo pipefail
+          case "$BOARD" in
+            x96-max-plus) family=sm1 ;;
+            tx3-mini) family=gxl ;;
+            *) exit 1 ;;
+          esac
           args=()
           if [ -n "$KERNEL_INPUT" ]; then
             [[ "$KERNEL_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
@@ -51,26 +49,12 @@ jobs:
           gh release view "${args[@]}" --repo "$GITHUB_REPOSITORY" --json tagName,assets > release.json
           version=$(jq -er '.tagName' release.json)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
-          jq -e --arg name "linux-image-$version-sm1.deb" \
-            'any(.assets[]; .name == $name)' release.json >/dev/null
+          jq -e --arg name "linux-image-$version-$family.deb" \
+            'if any(.assets[]; .name == $name) then true else error("kernel package not published: " + $name) end' release.json >/dev/null
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          gh api --paginate \
-            "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" > artifacts.json
-          if [ "$FORCE_INPUT" != true ] && jq -se \
-            --arg legacy "debian-trixie-x96-max-plus-$version" \
-            --arg suffix "-image-kernel-$version" \
-            'any(.[].artifacts[]; .expired == false and
-              (.name == $legacy or
-               (.name | startswith("debian-trixie-") and endswith($suffix))))' artifacts.json >/dev/null; then
-            echo 'build=false' >> "$GITHUB_OUTPUT"
-            echo "::notice:: An unexpired Debian image artifact for $version already exists."
-          else
-            echo 'build=true' >> "$GITHUB_OUTPUT"
-          fi
 
   build:
     needs: resolve
-    if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     steps:
@@ -79,6 +63,7 @@ jobs:
         id: image
         env:
           KERNEL_VERSION: ${{ needs.resolve.outputs.version }}
+          BOARD: ${{ inputs.board || 'x96-max-plus' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -88,16 +73,16 @@ jobs:
             --volume /dev:/dev \
             --volume "$GITHUB_OUTPUT:/step-output" \
             --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
-            --env KERNEL_VERSION --env GH_TOKEN --env KERNEL_REPOSITORY="$GITHUB_REPOSITORY" \
+            --env KERNEL_VERSION --env BOARD --env GH_TOKEN --env KERNEL_REPOSITORY="$GITHUB_REPOSITORY" \
             debian:trixie bash -euo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
               apt-get install -y -qq ca-certificates curl debootstrap jq util-linux dosfstools e2fsprogs parted rsync python3 initramfs-tools-core zstd
-              export OUTPUT="/workspace/out/dist/debian-trixie-x96-max-plus-${KERNEL_VERSION}.img"
+              export OUTPUT="/workspace/out/dist/debian-trixie-${BOARD}-${KERNEL_VERSION}.img"
               tools/build-debian-image.sh
-              debian_version=$(cat out/.work/debian-image-build/rootfs/etc/debian_version)
+              debian_version=$(cat "out/.work/debian-image-build-${BOARD}/rootfs/etc/debian_version")
               [[ "$debian_version" =~ ^[0-9]+(\.[0-9]+)*$ ]] || exit 1
-              artifact="debian-trixie-${debian_version}-image-kernel-${KERNEL_VERSION}"
+              artifact="debian-trixie-${debian_version}-${BOARD}-image-kernel-${KERNEL_VERSION}"
               echo "artifact=$artifact" >> /step-output
               mkdir -p artifacts
               zstd -T0 -6 "$OUTPUT" -o "artifacts/$artifact.img.zst"
@@ -112,4 +97,4 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 1

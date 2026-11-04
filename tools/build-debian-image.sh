@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build Debian for the Gigabit X96 Max+ using this repository's published kernel.
+# Build Debian for a supported Amlogic board using this repository's published kernel.
 # No kernel compilation, Armbian image download, or physical disk writes.
 
 ROOT=$(realpath "$(dirname "$0")/..")
-ASSETS="$ROOT/assets/x96-max-plus"
-OUTPUT=${OUTPUT:-"$ROOT/out/dist/debian-x96-max-plus.img"}
+BOARD=${BOARD:-x96-max-plus}
+case "$BOARD" in
+    x96-max-plus)
+        FAMILY=sm1
+        DTB=meson-sm1-x96-max-plus.dtb
+        OVERLOAD=u-boot-x96maxplus.bin
+        RAW_BOOTLOADER=x96maxplus-u-boot.bin.sd.bin
+        ;;
+    tx3-mini)
+        FAMILY=gxl
+        DTB=meson-gxl-s905w-tx3-mini.dtb
+        OVERLOAD=u-boot-s905x-s912.bin
+        RAW_BOOTLOADER=""
+        ;;
+    *) printf 'Unsupported BOARD: %s\n' "$BOARD" >&2; exit 1 ;;
+esac
+ASSETS="$ROOT/assets/$BOARD"
+OUTPUT=${OUTPUT:-"$ROOT/out/dist/debian-$BOARD.img"}
 ROOT_GIB=${ROOT_GIB:-2}
 ROOT_RESERVE_GIB=${ROOT_RESERVE_GIB:-1}
 ROOT_ALIGN_MIB=${ROOT_ALIGN_MIB:-256}
@@ -16,7 +32,7 @@ KERNEL_REPOSITORY=${KERNEL_REPOSITORY:-r0bb10/Amlogic-Kernel}
 KERNEL_VERSION=${KERNEL_VERSION:-}
 KERNEL_DEB=${KERNEL_DEB:-}
 BOARD_FILE="$ROOT/assets/firmware/qca6174-hw3.0-board-2.bin"
-WORK="$ROOT/out/.work/debian-image-build"
+WORK="$ROOT/out/.work/debian-image-build-$BOARD"
 ROOTFS="$WORK/rootfs"
 STATE="$WORK/.state"
 LOOP=""
@@ -27,6 +43,7 @@ die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
 usage() {
     printf 'Usage: %s [--stage bootstrap|configure|assemble|all|clean] [--reset]\n' "$0"
+    printf 'Environment: BOARD=x96-max-plus (default) or tx3-mini\n'
 }
 while (($#)); do
     case "$1" in
@@ -79,11 +96,16 @@ mount_chroot() {
 validate_build_state() {
     local digest file
     digest=$({
-        printf '%s\0' "$DEBIAN_SUITE" "$DEBIAN_MIRROR" "$KERNEL_REPOSITORY" \
+        printf '%s\0' "$BOARD" "$DEBIAN_SUITE" "$DEBIAN_MIRROR" "$KERNEL_REPOSITORY" \
             "$KERNEL_VERSION" "$ROOT_GIB" "$ROOT_RESERVE_GIB" "$ROOT_ALIGN_MIB"
         sha256sum "$WORK/kernel.deb" "$ROOT/tools/build-debian-image.sh" \
             "$ROOT/tools/install-to-emmc.sh" "$ROOT/tools/validate-debian-image.sh" \
-            "$ROOT/configs/systemd/wifi-import.service" "$BOARD_FILE" | cut -d' ' -f1
+            "$ROOT/configs/systemd/wifi-import.service" | cut -d' ' -f1
+        if [[ $BOARD == x96-max-plus ]]; then
+            sha256sum "$BOARD_FILE" | cut -d' ' -f1
+        else
+            sha256sum "$ASSETS/README.md" | cut -d' ' -f1
+        fi
         for file in "${boot_assets[@]}"; do
             sha256sum "$ASSETS/$file" | cut -d' ' -f1
         done
@@ -134,20 +156,26 @@ fi
 for command in curl debootstrap dpkg dpkg-deb jq losetup mkfs.ext4 mkfs.vfat mount mountpoint umount parted partprobe rsync tar chroot dd truncate sha256sum python3 perl stat install fsck.vfat e2fsck blkid lsinitramfs zstd du; do
     command -v "$command" >/dev/null || die "missing command: $command"
 done
-[[ -d $ASSETS ]] || die "missing X96 Max+ boot assets"
-[[ -s $BOARD_FILE ]] || die "missing QCA6174 board firmware"
+[[ -d $ASSETS ]] || die "missing $BOARD boot assets"
+if [[ $BOARD == x96-max-plus ]]; then
+    [[ -s $BOARD_FILE ]] || die "missing QCA6174 board firmware"
+fi
 [[ $KERNEL_REPOSITORY =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid KERNEL_REPOSITORY"
 [[ -z $KERNEL_VERSION || $KERNEL_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid KERNEL_VERSION"
-boot_assets=(ampart x96maxplus-u-boot.bin.sd.bin u-boot-x96maxplus.bin \
-    s905_autoscript s905_autoscript.cmd aml_autoscript aml_autoscript.cmd \
-    emmc_autoscript emmc_autoscript.cmd boot.scr boot.cmd boot-emmc.scr \
-    boot-emmc.cmd boot.ini boot-emmc.ini u-boot.usb u-boot.sd)
+boot_assets=("$OVERLOAD" s905_autoscript s905_autoscript.cmd \
+    aml_autoscript aml_autoscript.cmd boot.scr boot.cmd boot.ini u-boot.usb u-boot.sd)
+if [[ $BOARD == x96-max-plus ]]; then
+    boot_assets+=(ampart "$RAW_BOOTLOADER" emmc_autoscript emmc_autoscript.cmd \
+        boot-emmc.scr boot-emmc.cmd boot-emmc.ini)
+fi
 for file in "${boot_assets[@]}"; do
     [[ -s $ASSETS/$file ]] || die "missing boot asset: $file"
 done
 # Raw bootloader writes must stay entirely before the first partition (4 MiB).
-[[ $(stat -c %s "$ASSETS/x96maxplus-u-boot.bin.sd.bin") -lt $((4 * 1024 * 1024)) ]] \
-    || die "bootloader overlaps the boot partition"
+if [[ -n $RAW_BOOTLOADER ]]; then
+    [[ $(stat -c %s "$ASSETS/$RAW_BOOTLOADER") -lt $((4 * 1024 * 1024)) ]] \
+        || die "bootloader overlaps the boot partition"
+fi
 
 # ---------------------------------------------------------------- kernel package
 
@@ -176,9 +204,9 @@ else
     [[ $release_tag =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "latest release is not a kernel version"
     [[ -z $KERNEL_VERSION || $KERNEL_VERSION == "$release_tag" ]] || die "release tag does not match requested version"
     KERNEL_VERSION=$release_tag
-    package_url=$(jq -er --arg name "linux-image-$KERNEL_VERSION-sm1.deb" \
+    package_url=$(jq -er --arg name "linux-image-$KERNEL_VERSION-$FAMILY.deb" \
         '[.assets[] | select(.name == $name)] | if length == 1 then .[0].browser_download_url else error("missing or ambiguous kernel asset") end' "$WORK/release.json")
-    digest=$(jq -r --arg name "linux-image-$KERNEL_VERSION-sm1.deb" \
+    digest=$(jq -r --arg name "linux-image-$KERNEL_VERSION-$FAMILY.deb" \
         '.assets[] | select(.name == $name) | .digest // empty' "$WORK/release.json")
     if [[ -n $digest ]]; then
         [[ $digest =~ ^sha256:[a-f0-9]{64}$ ]] || die "unexpected release asset digest"
@@ -192,10 +220,10 @@ else
         mv -f "$WORK/kernel.deb.new" "$WORK/kernel.deb"
     fi
 fi
-[[ $(dpkg-deb -f "$WORK/kernel.deb" Package) == linux-image-sm1 ]] || die "unexpected kernel package"
+[[ $(dpkg-deb -f "$WORK/kernel.deb" Package) == "linux-image-$FAMILY" ]] || die "unexpected kernel package for $BOARD"
 [[ $(dpkg-deb -f "$WORK/kernel.deb" Architecture) == arm64 ]] || die "kernel is not ARM64"
 package_version=$(dpkg-deb -f "$WORK/kernel.deb" Version)
-[[ $package_version =~ ^([0-9]+\.[0-9]+\.[0-9]+)-sm1$ ]] || die "unexpected kernel version"
+[[ $package_version =~ ^([0-9]+\.[0-9]+\.[0-9]+)-${FAMILY}$ ]] || die "unexpected kernel version"
 resolved_version=${BASH_REMATCH[1]}
 [[ -z $KERNEL_VERSION || $KERNEL_VERSION == "$resolved_version" ]] || die "kernel version does not match requested release"
 KERNEL_VERSION=$resolved_version
@@ -237,13 +265,17 @@ Components: main contrib non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
     chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    local firmware=()
+    if [[ $BOARD == x96-max-plus ]]; then firmware=(firmware-atheros); fi
     chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        systemd-sysv ca-certificates dosfstools e2fsprogs ifupdown initramfs-tools isc-dhcp-client kmod openssh-server parted psmisc u-boot-tools firmware-atheros wpasupplicant wireless-regdb
+        systemd-sysv ca-certificates dosfstools e2fsprogs ifupdown initramfs-tools isc-dhcp-client kmod openssh-server parted psmisc u-boot-tools wpasupplicant wireless-regdb "${firmware[@]}"
     # Install firmware before the kernel's postinst generates the initramfs.
-    install -D -m 0644 "$BOARD_FILE" "$ROOTFS/usr/lib/firmware/ath10k/QCA6174/hw3.0/board-2.bin"
+    if [[ $BOARD == x96-max-plus ]]; then
+        install -D -m 0644 "$BOARD_FILE" "$ROOTFS/usr/lib/firmware/ath10k/QCA6174/hw3.0/board-2.bin"
+    fi
     cp "$WORK/kernel.deb" "$ROOTFS/tmp/kernel.deb"
     # Avoid host-specific MODULES=dep when generating an image for another board.
-    printf 'MODULES=most\nCOMPRESS=zstd\n' > "$ROOTFS/etc/initramfs-tools/conf.d/x96-image"
+    printf 'MODULES=most\nCOMPRESS=zstd\n' > "$ROOTFS/etc/initramfs-tools/conf.d/amlogic-image"
     chroot "$ROOTFS" dpkg -i /tmp/kernel.deb
     rm -f "$ROOTFS/tmp/"*.deb
     mark bootstrap
@@ -257,18 +289,21 @@ configure() {
     complete bootstrap || die "run the bootstrap stage first"
     mount_chroot
 
-    FLASHER="$ROOTFS/root"
-    mkdir -p "$FLASHER"
-    cp "$ROOT/tools/install-to-emmc.sh" "$FLASHER/install-to-emmc"
-    install -D -m 0755 "$ASSETS/ampart" "$ROOTFS/usr/local/sbin/ampart"
-    cp "$ASSETS/x96maxplus-u-boot.bin.sd.bin" "$ASSETS/u-boot-x96maxplus.bin" "$FLASHER/"
-    chmod 0755 "$FLASHER/install-to-emmc"
+    if [[ $BOARD == x96-max-plus ]]; then
+        FLASHER="$ROOTFS/root"
+        mkdir -p "$FLASHER"
+        cp "$ROOT/tools/install-to-emmc.sh" "$FLASHER/install-to-emmc"
+        install -D -m 0755 "$ASSETS/ampart" "$ROOTFS/usr/local/sbin/ampart"
+        cp "$ASSETS/$RAW_BOOTLOADER" "$ASSETS/$OVERLOAD" "$FLASHER/"
+        chmod 0755 "$FLASHER/install-to-emmc"
+    else
+        install -m 0644 "$ASSETS/README.md" "$ROOTFS/root/README-tx3-mini.md"
+    fi
 
     MODULES=("$ROOTFS"/usr/lib/modules/*)
     [[ ${#MODULES[@]} -eq 1 && -d ${MODULES[0]} ]] || die "kernel modules were not installed"
     KERNEL_RELEASE=$(basename "${MODULES[0]}")
-    [[ $KERNEL_RELEASE == "$KERNEL_VERSION-sm1" ]] || die "unexpected installed kernel release"
-    DTB=meson-sm1-x96-max-plus.dtb
+    [[ $KERNEL_RELEASE == "$KERNEL_VERSION-$FAMILY" ]] || die "unexpected installed kernel release"
     [[ -s "$ROOTFS/boot/zImage" ]] || die "kernel package did not install zImage"
     [[ -s "$ROOTFS/boot/uInitrd" ]] || die "kernel package did not install uInitrd"
     [[ -s "$ROOTFS/boot/dtb/amlogic/$DTB" ]] || die "kernel package did not install $DTB"
@@ -331,7 +366,8 @@ EOF
     rm -f "$ROOTFS/usr/sbin/policy-rc.d"
     chroot "$ROOTFS" apt-get clean
     rm -rf "$ROOTFS/var/lib/apt/lists/"*
-    cat > "$ROOTFS/etc/x96-image-release" <<EOF
+    cat > "$ROOTFS/etc/amlogic-image-release" <<EOF
+BOARD=$BOARD
 DEBIAN_SUITE=$DEBIAN_SUITE
 KERNEL_RELEASE=$KERNEL_RELEASE
 KERNEL_REPOSITORY=$KERNEL_REPOSITORY
@@ -343,15 +379,13 @@ EOF
     mkdir -p "$BOOT/dtb/amlogic"
     cp "$ROOTFS/boot/zImage" "$ROOTFS/boot/uInitrd" "$BOOT/"
     cp "$ROOTFS/boot/dtb/amlogic/$DTB" "$BOOT/dtb/amlogic/$DTB"
-    cp "$ASSETS"/s905_autoscript "$ASSETS"/s905_autoscript.cmd \
-        "$ASSETS"/aml_autoscript "$ASSETS"/aml_autoscript.cmd \
-        "$ASSETS"/emmc_autoscript "$ASSETS"/emmc_autoscript.cmd \
-        "$ASSETS"/boot.scr "$ASSETS"/boot.cmd \
-        "$ASSETS"/boot-emmc.scr "$ASSETS"/boot-emmc.cmd \
-        "$ASSETS"/boot.ini "$ASSETS"/boot-emmc.ini \
-        "$ASSETS"/u-boot.usb "$ASSETS"/u-boot.sd \
-        "$ASSETS"/u-boot-x96maxplus.bin "$BOOT/"
-    cp "$ASSETS/u-boot-x96maxplus.bin" "$BOOT/u-boot.ext"
+    for file in "${boot_assets[@]}"; do
+        [[ $file == ampart || $file == "$RAW_BOOTLOADER" ]] && continue
+        cp "$ASSETS/$file" "$BOOT/"
+    done
+    if [[ $BOARD == x96-max-plus ]]; then
+        cp "$ASSETS/$OVERLOAD" "$BOOT/u-boot.ext"
+    fi
     cp "$ROOTFS/boot/config-$KERNEL_RELEASE" "$BOOT/"
     cat > "$BOOT/uEnv.txt" <<EOF
 LINUX=/zImage
@@ -367,7 +401,7 @@ EOF
 assemble() {
     complete configure || die "run the configure stage first"
     cleanup
-    KERNEL_RELEASE="$KERNEL_VERSION-sm1"
+    KERNEL_RELEASE="$KERNEL_VERSION-$FAMILY"
     ROOT_UUID=$(<"$STATE/root-uuid")
     BOOT="$WORK/boot"
     IMAGE="$WORK/image.img"
@@ -384,8 +418,10 @@ assemble() {
     parted -s "$IMAGE" mklabel msdos \
         mkpart primary fat32 4MiB 516MiB set 1 lba on \
         mkpart primary ext4 516MiB 100%
-    dd if="$ASSETS/x96maxplus-u-boot.bin.sd.bin" of="$IMAGE" conv=fsync,notrunc bs=1 count=444 status=none
-    dd if="$ASSETS/x96maxplus-u-boot.bin.sd.bin" of="$IMAGE" conv=fsync,notrunc bs=512 skip=1 seek=1 status=none
+    if [[ -n $RAW_BOOTLOADER ]]; then
+        dd if="$ASSETS/$RAW_BOOTLOADER" of="$IMAGE" conv=fsync,notrunc bs=1 count=444 status=none
+        dd if="$ASSETS/$RAW_BOOTLOADER" of="$IMAGE" conv=fsync,notrunc bs=512 skip=1 seek=1 status=none
+    fi
 
     LOOP=$(losetup -Pf --show "$IMAGE")
     wait_for_partitions
@@ -405,7 +441,7 @@ assemble() {
     LOOP=""
 
     # Inspect the final on-disk filesystems, not merely the staging tree.
-    "$ROOT/tools/validate-debian-image.sh" "$IMAGE" "$KERNEL_RELEASE"
+    "$ROOT/tools/validate-debian-image.sh" "$IMAGE" "$KERNEL_RELEASE" "$BOARD"
     mv "$IMAGE" "$OUTPUT"
     (cd "$(dirname "$OUTPUT")" && sha256sum "$(basename "$OUTPUT")") > "$OUTPUT.sha256"
     mark assemble
