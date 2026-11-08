@@ -5,8 +5,15 @@ set -euo pipefail
 
 : "${KERNEL_VERSION:?KERNEL_VERSION must be set to an upstream Linux version}"
 readonly KERNEL_TAG="v${KERNEL_VERSION}"
-readonly PACKAGE_NAME="linux-image-sm1"
-readonly PACKAGE_VERSION="${KERNEL_VERSION}-sm1"
+readonly KERNEL_FAMILY="${KERNEL_FAMILY:-sm1}"
+case "$KERNEL_FAMILY" in
+    sm1) DTB=meson-sm1-x96-max-plus.dtb; MODEL="AMedia X96 Max Plus"; OTHER_FAMILY=gxl; RAMDISK_ARCH=arm ;;
+    gxl) DTB=meson-gxl-s905w-tx3-mini.dtb; MODEL="Tanix TX3 Mini"; OTHER_FAMILY=sm1; RAMDISK_ARCH=arm64 ;;
+    *) printf 'Unsupported KERNEL_FAMILY: %s\n' "$KERNEL_FAMILY" >&2; exit 1 ;;
+esac
+readonly DTB MODEL OTHER_FAMILY RAMDISK_ARCH
+readonly PACKAGE_NAME="linux-image-${KERNEL_FAMILY}"
+readonly PACKAGE_VERSION="${KERNEL_VERSION}-${KERNEL_FAMILY}"
 readonly ARCH="arm64"
 # The Actions runner builds natively. Set this only when intentionally using
 # an alternate compiler prefix.
@@ -48,10 +55,15 @@ checkout_source() {
 }
 
 apply_board_patch() {
-    git -C "${SOURCE_DIR}" apply --check "${PATCH_DIR}/sm1.patch"
-    git -C "${SOURCE_DIR}" apply --index "${PATCH_DIR}/sm1.patch"
+    local patch
+    local patches=("${PATCH_DIR}/${KERNEL_FAMILY}.patch")
+    if [[ $KERNEL_FAMILY == gxl ]]; then patches+=("${PATCH_DIR}/ssv6051.patch"); fi
+    for patch in "${patches[@]}"; do
+        git -C "${SOURCE_DIR}" apply --check "$patch"
+        git -C "${SOURCE_DIR}" apply --index "$patch"
+    done
     git -C "${SOURCE_DIR}" -c user.name="Amlogic Kernel Build" \
-        -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit --no-gpg-sign -m "arm64: dts: add X96 Max Plus"
+        -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit --no-gpg-sign -m "arm64: apply ${KERNEL_FAMILY} board compatibility patch"
 }
 
 configure_kernel() {
@@ -61,13 +73,16 @@ configure_kernel() {
     install -m 0644 "${CONFIG_BASELINE}" "${OUTPUT_DIR}/.config"
     "${SOURCE_DIR}/scripts/config" --file "${OUTPUT_DIR}/.config" \
         --disable ARCH_SUNXI --disable ARCH_ROCKCHIP --enable ARCH_MESON \
-        --set-str LOCALVERSION "-sm1" --disable LOCALVERSION_AUTO
+        --set-str LOCALVERSION "-${KERNEL_FAMILY}" --disable LOCALVERSION_AUTO
+    if [[ $KERNEL_FAMILY == gxl ]]; then
+        "${SOURCE_DIR}/scripts/config" --file "${OUTPUT_DIR}/.config" --module SSV6051
+    fi
     make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
 }
 
 build_kernel() {
     make -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
-        -j"$(nproc)" Image modules amlogic/meson-sm1-x96-max-plus.dtb
+        -j"$(nproc)" Image modules "amlogic/${DTB}"
 }
 
 package_kernel() {
@@ -76,7 +91,7 @@ package_kernel() {
     local kernel_release
     local image_dir
     local image_source="${OUTPUT_DIR}/arch/arm64/boot/Image"
-    local dtb_source="${OUTPUT_DIR}/arch/arm64/boot/dts/amlogic/meson-sm1-x96-max-plus.dtb"
+    local dtb_source="${OUTPUT_DIR}/arch/arm64/boot/dts/amlogic/${DTB}"
 
     kernel_release="$(make -s -C "${SOURCE_DIR}" O="${OUTPUT_DIR}" ARCH="${ARCH}" kernelrelease)"
     image_dir="${stage_dir}/usr/lib/${PACKAGE_NAME}/${kernel_release}"
@@ -89,7 +104,7 @@ package_kernel() {
     rm -f "${stage_dir}/lib/modules/${kernel_release}/build" \
         "${stage_dir}/lib/modules/${kernel_release}/source"
     install -m 0644 "${image_source}" "${image_dir}/zImage"
-    install -m 0644 "${dtb_source}" "${image_dir}/meson-sm1-x96-max-plus.dtb"
+    install -m 0644 "${dtb_source}" "${image_dir}/${DTB}"
     install -m 0644 "${OUTPUT_DIR}/.config" "${image_dir}/config-${kernel_release}"
     install -m 0644 "${OUTPUT_DIR}/System.map" "${image_dir}/System.map-${kernel_release}"
 
@@ -98,8 +113,9 @@ Package: ${PACKAGE_NAME}
 Version: ${PACKAGE_VERSION}
 Architecture: arm64
 Depends: initramfs-tools, u-boot-tools
+Conflicts: linux-image-${OTHER_FAMILY}
 Maintainer: Amlogic Kernel Build <41898282+github-actions[bot]@users.noreply.github.com>
-Description: Upstream Linux ${KERNEL_VERSION} for the AMedia X96 Max Plus
+Description: Upstream Linux ${KERNEL_VERSION} for the ${MODEL}
 EOF
 
     cat >"${control_dir}/postinst" <<EOF
@@ -114,12 +130,12 @@ initrd="\${staging_dir}/initrd.img-\${release}"
 depmod -a "\${release}"
 install -d -m 0755 /boot/dtb/amlogic
 install -m 0644 "\${image_dir}/zImage" /boot/zImage
-install -m 0644 "\${image_dir}/meson-sm1-x96-max-plus.dtb" /boot/dtb/amlogic/meson-sm1-x96-max-plus.dtb
+install -m 0644 "\${image_dir}/${DTB}" /boot/dtb/amlogic/${DTB}
 install -m 0644 "\${image_dir}/config-\${release}" "/boot/config-\${release}"
 install -d -m 0755 "\${staging_dir}"
 rm -f "\${initrd}"
 update-initramfs -c -k "\${release}" -b "\${staging_dir}"
-mkimage -A arm -O linux -T ramdisk -C none -d "\${initrd}" /boot/uInitrd
+mkimage -A ${RAMDISK_ARCH} -O linux -T ramdisk -C none -d "\${initrd}" /boot/uInitrd
 
 # This board has a single fixed boot path, so retained kernels cannot be booted.
 # Remove obsolete modules and versioned boot files only after the new payload exists.
@@ -162,7 +178,7 @@ main() {
     configure_kernel
     build_kernel
     package_kernel
-    printf 'Built package: %s\n' "${PACKAGE_DIR}/linux-image-${KERNEL_VERSION}-sm1.deb"
+    printf 'Built package: %s\n' "${PACKAGE_DIR}/linux-image-${KERNEL_VERSION}-${KERNEL_FAMILY}.deb"
 }
 
 main "$@"
