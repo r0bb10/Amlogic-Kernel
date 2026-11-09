@@ -16,7 +16,7 @@ case "$BOARD" in
     tx3-mini)
         FAMILY=gxl
         DTB=meson-gxl-s905w-tx3-mini.dtb
-        OVERLOAD=u-boot-s905x-s912.bin
+        OVERLOAD=u-boot.bin
         RAW_BOOTLOADER=""
         ;;
     *) printf 'Unsupported BOARD: %s\n' "$BOARD" >&2; exit 1 ;;
@@ -172,10 +172,15 @@ boot_assets=("$OVERLOAD" s905_autoscript s905_autoscript.cmd \
 if [[ $BOARD == x96-max-plus ]]; then
     boot_assets+=(ampart "$RAW_BOOTLOADER" emmc_autoscript emmc_autoscript.cmd \
         boot-emmc.scr boot-emmc.cmd boot-emmc.ini)
+else
+    boot_assets+=(u-boot.defconfig COPYING SHA256SUMS)
 fi
 for file in "${boot_assets[@]}"; do
     [[ -s $ASSETS/$file ]] || die "missing boot asset: $file"
 done
+if [[ $BOARD == tx3-mini ]]; then
+    (cd "$ASSETS" && sha256sum -c SHA256SUMS)
+fi
 # Raw bootloader writes must stay entirely before the first partition (4 MiB).
 if [[ -n $RAW_BOOTLOADER ]]; then
     [[ $(stat -c %s "$ASSETS/$RAW_BOOTLOADER") -lt $((4 * 1024 * 1024)) ]] \
@@ -232,6 +237,12 @@ package_version=$(dpkg-deb -f "$WORK/kernel.deb" Version)
 resolved_version=${BASH_REMATCH[1]}
 [[ -z $KERNEL_VERSION || $KERNEL_VERSION == "$resolved_version" ]] || die "kernel version does not match requested release"
 KERNEL_VERSION=$resolved_version
+if [[ $BOARD == tx3-mini ]]; then
+    # Reject published legacy packages before bootstrapping or installing them.
+    dpkg-deb --fsys-tarfile "$WORK/kernel.deb" | \
+        tar -xOf - "./usr/lib/linux-image-gxl/$package_version/zImage" | \
+        python3 -c 'import struct, sys; image = sys.stdin.buffer.read(); assert image[56:60] == b"ARM\x64" and struct.unpack_from("<Q", image, 8)[0] == 0, "Legacy GXL kernel: rebuild the kernel release with force=true before building this image"'
+fi
 shopt -s nullglob
 validate_build_state
 
@@ -319,6 +330,11 @@ configure() {
 
     # ---------------------------------------------------------------- Debian config
 
+    # Debian's libc provides C.UTF-8 without the locales package or locale-gen.
+    # Leave LC_ALL unset so users can override individual locale categories.
+    mkdir -p "$ROOTFS/etc/default"
+    printf 'LANG=C.UTF-8\n' > "$ROOTFS/etc/default/locale"
+    chmod 0644 "$ROOTFS/etc/default/locale"
     [[ -s $STATE/root-uuid ]] || cat /proc/sys/kernel/random/uuid > "$STATE/root-uuid"
     ROOT_UUID=$(<"$STATE/root-uuid")
     printf 'debian\n' > "$ROOTFS/etc/hostname"
@@ -368,6 +384,7 @@ EOF
     # Each flashed system must generate its own host identity at first boot.
     rm -f "$ROOTFS/etc/ssh/ssh_host_"*
     mkdir -p "$ROOTFS/etc/systemd/system/getty.target.wants"
+    ln -sfn /lib/systemd/system/getty@.service "$ROOTFS/etc/systemd/system/getty.target.wants/getty@tty1.service"
     ln -sfn /lib/systemd/system/serial-getty@.service "$ROOTFS/etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service"
     printf 'uninitialized\n' > "$ROOTFS/etc/machine-id"
     rm -f "$ROOTFS/var/lib/dbus/machine-id"
@@ -400,7 +417,7 @@ EOF
 LINUX=/zImage
 INITRD=/uInitrd
 FDT=/dtb/amlogic/$DTB
-APPEND=root=UUID=$ROOT_UUID rw rootwait rootfstype=ext4 console=ttyAML0,115200n8 console=tty0 fsck.repair=yes net.ifnames=0
+APPEND=root=UUID=$ROOT_UUID rw rootwait rootfstype=ext4 console=ttyAML0,115200n8 fsck.repair=yes net.ifnames=0
 EOF
     mark configure
 }

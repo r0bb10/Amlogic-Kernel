@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       board:
-        description: Board to restore (TX3 Mini is hardware-unverified; no eMMC installer)
+        description: Board to restore (TX3 Mini uses U-Boot 2026.04; no eMMC installer)
         type: choice
         options:
           - x96-max-plus
           - tx3-mini
         default: x96-max-plus
       kernel_version:
-        description: Published kernel version (empty selects latest release)
+        description: Published kernel version (empty selects latest; TX3 requires a rebuilt zero-offset GXL package)
         type: string
         default: ""
 

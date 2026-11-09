@@ -21,7 +21,7 @@ CONFIG_FIT_SIGNATURE=y
 CONFIG_FIT_VERBOSE=y
 CONFIG_BOOTDELAY=5
 CONFIG_OF_BOARD_SETUP=y
-CONFIG_BOOTCOMMAND="usb start; if load usb 0:1 0x08000000 tx3-test.scr; then source 0x08000000; fi"
+CONFIG_BOOTCOMMAND="for devtype in usb mmc; do for devnum in 0 1 2 3; do if load ${devtype} ${devnum}:1 0x08000000 boot.scr; then source 0x08000000; fi; done; done"
 CONFIG_USE_PREBOOT=y
 CONFIG_PREBOOT="echo U-Boot 2026.04; usb start"
 # CONFIG_DISPLAY_CPUINFO is not set

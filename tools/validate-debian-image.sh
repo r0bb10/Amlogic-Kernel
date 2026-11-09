@@ -10,7 +10,7 @@ release=$2
 family=${BASH_REMATCH[1]}
 case "$family" in
     sm1) board=x96-max-plus; dtb=meson-sm1-x96-max-plus.dtb; overload=u-boot-x96maxplus.bin ;;
-    gxl) board=tx3-mini; dtb=meson-gxl-s905w-tx3-mini.dtb; overload=u-boot-s905x-s912.bin ;;
+    gxl) board=tx3-mini; dtb=meson-gxl-s905w-tx3-mini.dtb; overload=u-boot.bin ;;
 esac
 [[ ${3:-$board} == "$board" ]] || { echo 'Board does not match kernel family' >&2; exit 1; }
 work=$(mktemp -d)
@@ -66,11 +66,18 @@ grep -q "root=UUID=$uuid " "$boot/uEnv.txt"
 grep -qx 'LINUX=/zImage' "$boot/uEnv.txt"
 grep -qx 'INITRD=/uInitrd' "$boot/uEnv.txt"
 grep -Fxq "FDT=/dtb/amlogic/$dtb" "$boot/uEnv.txt"
+grep -Eq '^APPEND=.* console=ttyAML0,115200n8( |$)' "$boot/uEnv.txt"
+if grep -Eq '^APPEND=.* console=tty[0-9]+(,| |$)' "$boot/uEnv.txt"; then
+    echo 'HDMI terminals must not receive kernel console output' >&2
+    exit 1
+fi
 files=(zImage uInitrd "dtb/amlogic/$dtb" "$overload" \
     boot.scr boot.cmd boot.ini u-boot.usb u-boot.sd \
     s905_autoscript s905_autoscript.cmd aml_autoscript aml_autoscript.cmd)
 if [[ $board == x96-max-plus ]]; then
     files+=(u-boot.ext boot-emmc.scr boot-emmc.cmd boot-emmc.ini emmc_autoscript)
+else
+    files+=(u-boot.defconfig COPYING SHA256SUMS)
 fi
 for file in "${files[@]}"; do
     test -s "$boot/$file"
@@ -78,9 +85,11 @@ done
 if [[ $board == x96-max-plus ]]; then
     cmp "$boot/u-boot.ext" "$boot/$overload"
 else
-    # The S905W image boots Linux directly through the existing bootloader.
-    # This alias makes s905_autoscript chainload U-Boot instead.
+    assets=$(realpath "$(dirname "$0")/../assets/tx3-mini")
+    cmp "$boot/SHA256SUMS" "$assets/SHA256SUMS"
+    (cd "$boot" && sha256sum -c SHA256SUMS)
     test ! -e "$boot/u-boot.ext"
+    test ! -e "$boot/u-boot-s905x-s912.bin"
 fi
 cmp "$boot/zImage" "$root/usr/lib/linux-image-$family/$release/zImage"
 cmp "$boot/dtb/amlogic/$dtb" "$root/usr/lib/linux-image-$family/$release/$dtb"
@@ -104,7 +113,12 @@ else
     test ! -e "$boot/emmc_autoscript"
 fi
 test -L "$root/sbin/init"
+test "$(cat "$root/etc/default/locale")" = 'LANG=C.UTF-8'
+test "$(stat -c %a "$root/etc/default/locale")" = 644
+[[ $(chroot "$root" /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/bin/locale charmap) == UTF-8 ]]
 test -e "$root/usr/lib/systemd/system/serial-getty@.service"
+test -e "$root/usr/lib/systemd/system/getty@.service"
+test -L "$root/etc/systemd/system/getty.target.wants/getty@tty1.service"
 test -L "$root/etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service"
 test -e "$root/usr/lib/systemd/system/sshd-keygen.service"
 test -L "$root/etc/systemd/system/ssh.service.wants/sshd-keygen.service"
@@ -158,7 +172,26 @@ b = Path(sys.argv[1])
 kernel = (b/'zImage').read_bytes()
 assert kernel[56:60] == b'ARM\x64', 'not a raw ARM64 Image'
 if sys.argv[4] == 'tx3-mini':
-    assert struct.unpack_from('<Q', kernel, 8)[0] == 0x01080000, 'GXL kernel lacks the legacy Amlogic load offset; rebuild the kernel package'
+    assert struct.unpack_from('<Q', kernel, 8)[0] == 0, 'GXL requires a zero-offset kernel; rebuild the kernel package'
+    assert b'U-Boot 2026.04 (' in (b/'u-boot.bin').read_bytes(), 'unexpected chainloader version'
+    assert (b/'boot.ini').read_bytes() == b'ODROIDN2-UBOOT-CONFIG\n' + (b/'s905_autoscript.cmd').read_bytes(), 'stale legacy chainload entry'
+    for script, arch in [('boot.scr', 22), ('s905_autoscript', 2), ('aml_autoscript', 2)]:
+        source = 'boot.cmd' if script == 'boot.scr' else script + '.cmd'
+        script_data = (b/script).read_bytes()
+        script_header = bytearray(script_data[:64])
+        magic, hcrc, _, size, _, _, dcrc = struct.unpack('>7I', script_header[:28])
+        assert magic == 0x27051956 and script_header[30] == 6 and script_header[29] == arch, f'invalid {script} header'
+        script_header[4:8] = b'\0'*4
+        assert zlib.crc32(script_header) == hcrc, f'invalid {script} header CRC'
+        script_payload = script_data[64:]
+        assert len(script_payload) == size and zlib.crc32(script_payload) == dcrc, f'invalid {script} payload CRC'
+        source_data = (b/source).read_bytes()
+        assert struct.unpack('>2I', script_payload[:8]) == (len(source_data), 0), f'invalid {script} source size'
+        assert script_payload[8:] == source_data, f'stale compiled {script}'
+    for source in ['boot.cmd', 's905_autoscript.cmd', 'uEnv.txt']:
+        text = (b/source).read_text()
+        assert 'tx3_uboot_' not in text and '-test' not in text, f'temporary boot configuration in {source}'
+        assert 'saveenv' not in text, f'persistent environment write in {source}'
 assert (b/'dtb/amlogic'/sys.argv[3]).read_bytes()[:4] == b'\xd0\x0d\xfe\xed'
 data = (b/'uInitrd').read_bytes()
 header = bytearray(data[:64])

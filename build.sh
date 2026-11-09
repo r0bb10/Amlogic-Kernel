@@ -56,14 +56,17 @@ checkout_source() {
 
 apply_board_patch() {
     local patch
-    local patches=("${PATCH_DIR}/${KERNEL_FAMILY}.patch")
-    if [[ $KERNEL_FAMILY == gxl ]]; then patches+=("${PATCH_DIR}/ssv6051.patch"); fi
+    local patches=()
+    case "$KERNEL_FAMILY" in
+        sm1) patches+=("${PATCH_DIR}/sm1.patch") ;;
+        gxl) patches+=("${PATCH_DIR}/ssv6051.patch") ;;
+    esac
     for patch in "${patches[@]}"; do
         git -C "${SOURCE_DIR}" apply --check "$patch"
         git -C "${SOURCE_DIR}" apply --index "$patch"
     done
     git -C "${SOURCE_DIR}" -c user.name="Amlogic Kernel Build" \
-        -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit --no-gpg-sign -m "arm64: apply ${KERNEL_FAMILY} board compatibility patch"
+        -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit --no-gpg-sign -m "arm64: apply ${KERNEL_FAMILY} board support patches"
 }
 
 configure_kernel() {
@@ -117,6 +120,9 @@ Conflicts: linux-image-${OTHER_FAMILY}
 Maintainer: Amlogic Kernel Build <41898282+github-actions[bot]@users.noreply.github.com>
 Description: Upstream Linux ${KERNEL_VERSION} for the ${MODEL}
 EOF
+    if [[ $KERNEL_FAMILY == gxl ]]; then
+        printf ' Requires the updated chainloaded U-Boot 2026.04 and matching boot scripts.\n' >> "${control_dir}/control"
+    fi
 
     cat >"${control_dir}/postinst" <<EOF
 #!/bin/sh

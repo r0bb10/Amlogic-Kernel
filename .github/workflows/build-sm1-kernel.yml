@@ -188,7 +188,7 @@ jobs:
               header = f.read(64)
           assert header[56:60] == b'ARM\x64', 'not a raw ARM64 Image'
           if sys.argv[2] == 'gxl':
-              assert struct.unpack_from('<Q', header, 8)[0] == 0x01080000, 'missing legacy Amlogic Image load offset'
+              assert struct.unpack_from('<Q', header, 8)[0] == 0, 'GXL requires an upstream zero-offset Image for U-Boot 2026.04'
           PY
           for option in \
             CONFIG_ARCH_MESON=y \
@@ -244,7 +244,7 @@ jobs:
           - Source: ${KERNEL_URL} tag v${KERNEL_VERSION}
           - Architecture: ARM64
           - SM1: AMedia X96 Max Plus / S905X3, linux-image-${KERNEL_VERSION}-sm1.deb
-          - GXL: Tanix TX3 Mini / S905W, linux-image-${KERNEL_VERSION}-gxl.deb (hardware testing pending)
+          - GXL: Tanix TX3 Mini / S905W, linux-image-${KERNEL_VERSION}-gxl.deb; requires the updated chainloaded U-Boot 2026.04, not the legacy direct-boot path.
           - Build verification: package contents, board DTBs, and required platform configuration symbols
           - Install only the package for your board; recovery images are manual Actions artifacts, not release assets.
           EOF
