@@ -49,6 +49,10 @@ eMMC boot has been separately validated.
 Current payload SHA256:
 `4e5d6a03f792bee9f3b96cc4ab2bdf2c46a3818c4304ab239fe3ada1b81946f2`.
 The hashes in the historical test notes below identify the earlier build.
+The suffix-free build was reboot-tested successfully from USB: expected
+marker and binary hash, 2 MiB aligned kernel, no alignment warning, and
+zero failed services. HDMI banner appearance still needs visual confirmation.
+The startup message is OS-neutral: `Booting from USB`.
 
 ## Initial test, 2026-11-09
 

@@ -1,4 +1,4 @@
-echo "Booting Debian from USB"
+echo "Booting from USB"
 setenv kernel_addr_r 0x11000000
 setenv ramdisk_addr_r 0x15000000
 setenv fdt_addr_r 0x08008000
