@@ -25,7 +25,7 @@ readonly SOURCE_DIR="${ROOT_DIR}/source"
 readonly OUTPUT_DIR="${ROOT_DIR}/build"
 readonly PACKAGE_DIR="${ROOT_DIR}/out"
 readonly PATCH_DIR="${ROOT_DIR}/patches"
-readonly CONFIG_BASELINE="${ROOT_DIR}/configs/sm1.config"
+readonly CONFIG_BASELINE="${ROOT_DIR}/configs/amlogic.config"
 readonly KERNEL_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 
 require_command() {
